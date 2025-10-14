@@ -1,0 +1,2 @@
+# githubimage
+Typecho博客以github仓库为基础的图床上传插件
