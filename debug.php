@@ -1,10 +1,11 @@
 <?php
 /**
- * GitHub图床插件调试页面 - 优化版本
+ * GitHub图床插件
  * 
  * @package GitHubImageUpload
- * @author Your Name
- * @version 2.0.0
+ * @author ksweb2
+ * @version 3.0.0
+ * @link https://github.com/ksweb2/githubimage
  */
 
 // 防止直接访问

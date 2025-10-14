@@ -3,9 +3,9 @@
  * GitHub图床插件
  * 
  * @package GitHubImageUpload
- * @author Your Name
+ * @author ksweb2
  * @version 3.0.0
- * @link https://github.com/yourusername/typecho-github-image-upload
+ * @link https://github.com/ksweb2/githubimage
  */
 
 if (!defined('__TYPECHO_ROOT_DIR__')) {
