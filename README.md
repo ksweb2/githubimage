@@ -1,104 +1,66 @@
-# GitHub图床插件使用说明
+# GitHubImageUpload (Typecho 插件)
 
-## 🔧 问题解决
+将图片附件上传到 GitHub 仓库，并在编辑器与内容中以直链形式展示；支持镜像加速（传统 raw 域 与 gh-proxy）。非图片文件（如 mp3/zip/pdf）继续走 Typecho 默认本地上传流程，互不干扰。
 
-### GitHub Token认证问题
-根据您提供的日志，问题出现在GitHub API返回401错误"Bad credentials"。这通常意味着：
+## 功能特性
+- 图片直传 GitHub（Contents API），保存为 `images/YYYY/MM/DD/<unique>.<ext>`
+- 镜像加速（可选）：
+  - 传统 raw 域：`https://raw.kkgithub.com/<user>/<repo>/main/images/...`
+  - gh-proxy 前缀：`https://hk.gh-proxy.com/https://raw.githubusercontent.com/<user>/<repo>/main/images/...`
+- API 上传加速（可选）：将 `https://api.github.com/` 替换为传统 API 镜像（如 `https://api.kkgithub.com/`）
+- 编辑器注入：仅对图片扩展名改写为直链/镜像；非图片不改写
+- 内容过滤：发布后将本地图片 URL 替换为 GitHub 直链/镜像 URL
+- 健壮日志：记录上传请求与错误，便于排障
 
-1. **Token已过期** - GitHub Personal Access Token可能已过期
-2. **Token权限不足** - Token可能没有足够的权限访问仓库
-3. **Token格式错误** - Token格式可能不正确
+## 安装
+1. 将本目录放到 `usr/plugins/GitHubImageUpload`
+2. 后台启用插件
+3. 打开插件设置完成配置
 
-### 解决方案
+## 配置项
+- GitHub Token：具备目标仓库内容写入权限（repo）
+- GitHub 用户名：如 `ksweb2`
+- GitHub 仓库名：如 `tuchuang`
+- 使用镜像：是否启用内容镜像
+- 内容镜像地址（可选）：
+  - 传统镜像（raw 域）：如 `https://raw.kkgithub.com/`
+  - gh-proxy 代理根：如 `https://hk.gh-proxy.com`
+- API 镜像地址（可选）：传统镜像 API 域，如 `https://api.kkgithub.com/`
+  - 启用后上传时以该域替换 `https://api.github.com/`
+  - 仅建议填写含 `api.` 的传统镜像，避免前缀代理引发双重 URL
 
-#### 1. 重新生成GitHub Token
-1. 访问 [GitHub Settings > Developer settings > Personal access tokens](https://github.com/settings/tokens)
-2. 点击 "Generate new token (classic)"
-3. 设置过期时间（建议选择较长时间）
-4. 选择权限范围：
-   - ✅ `repo` (完整仓库访问权限)
-   - ✅ `public_repo` (公开仓库访问权限)
-5. 复制生成的Token（以`ghp_`开头）
+## 使用
+- 编辑器上传图片：图片直传 GitHub；插入到编辑器的 URL 为原始/镜像直链
+- 编辑器上传非图片：按 Typecho 默认流程保存到本地 `/usr/uploads`，URL 不改写
+- 发布后：内容中的本地图片 URL 会被替换为 GitHub 直链/镜像 URL
 
-#### 2. 更新插件配置
-1. 进入Typecho后台 > 控制台 > 插件
-2. 找到GitHub图床插件，点击"设置"
-3. 更新GitHub Token字段
-4. 点击"测试连接"验证配置
+## 行为/实现细节
+- 不预创建目录与 `.gitkeep`，直接对多级路径执行 PUT
+- 仅图片扩展名会被镜像改写：`jpg|jpeg|png|gif|webp|bmp|svg`
+- 上传失败会记录日志并返回错误；非图片流程不受影响
 
-## 🚀 新增功能
+## 日志
+- 路径：`GitHubImageUpload/log/github_upload_YYYY-MM-DD.log`
+- 记录：配置状态、API URL、HTTP 状态码、错误信息等
 
-### API镜像支持
-现在支持使用GitHub API镜像来加速访问：
+## 故障排除
+- 401 Bad credentials：检查 Token 是否正确/未过期，是否包含 repo 权限
+- 404 Not Found：检查用户名/仓库名/分支与路径是否正确
+- 500 上传失败但刷新后附件可见：查看日志中的 GitHub API 响应；确认镜像配置未造成双重 URL
 
-#### 配置选项
-- **API镜像地址**: 如 `https://api.kkgithub.com/`
-- **是否使用API镜像**: 启用/禁用API镜像
+## FAQ
+- 访问文章时图片由谁请求？
+  - 用户浏览器直接请求 GitHub 或镜像直链，服务器不转发；因此镜像能直接改善读者侧的加载速度与可用性。
+- 是否需要反向代理/缓存？
+  - 非必须。若读者访问 raw 较慢，可配置镜像；也可在 CDN/前端做缓存。
+- 镜像如何填写？
+  - 传统内容镜像：`https://raw.kkgithub.com/`
+  - gh-proxy 内容镜像：`https://hk.gh-proxy.com`
+  - 传统 API 镜像：`https://api.kkgithub.com/`
 
-#### 支持的镜像服务
-- `https://api.kkgithub.com/` - kkgithub镜像
-- `https://api.github.com.cnpmjs.org/` - cnpmjs镜像
-- 其他兼容的GitHub API镜像
+## 兼容性
+- 需要 PHP cURL
+- 适配 Typecho 核心上传与编辑器常见场景
 
-### 改进的错误处理
-- 更详细的错误提示
-- Token验证失败时的具体说明
-- 仓库访问权限检查
-- 分支配置验证
-
-## 📋 完整配置指南
-
-### 必需配置
-1. **GitHub Token**: 具有repo权限的Personal Access Token
-2. **GitHub用户名**: 您的GitHub用户名或组织名
-3. **GitHub仓库名**: 用于存储图片的仓库名称
-
-### 可选配置
-1. **GitHub分支**: 默认为`main`
-2. **存储路径**: 默认为`images`
-3. **目录结构**: 按日期分类或平铺存储
-4. **图片压缩**: 启用/禁用，设置质量和最大尺寸
-5. **镜像加速**: 
-   - GitHub镜像地址（用于图片访问）
-   - API镜像地址（用于API请求）
-
-## 🔍 故障排除
-
-### 常见错误及解决方案
-
-#### 401 Bad credentials
-- 检查Token是否正确
-- 确认Token未过期
-- 验证Token权限包含`repo`
-
-#### 404 Not Found
-- 检查仓库名是否正确
-- 确认仓库存在且可访问
-- 验证用户名/组织名正确
-
-#### 403 Forbidden
-- 检查Token权限是否足够
-- 确认仓库访问权限
-- 验证分支名称正确
-
-### 调试方法
-1. 查看插件日志文件：`/GitHubImageUpload/logs/`
-2. 使用调试页面：访问`debug.php`
-3. 使用测试功能：访问`test.php`
-
-## 📝 更新日志
-
-### v2.0.0
-- ✅ 修复GitHub Token认证问题
-- ✅ 添加API镜像支持
-- ✅ 改进错误处理和用户提示
-- ✅ 优化代码结构和性能
-- ✅ 简化配置流程
-
-## 🆘 技术支持
-
-如果遇到问题，请：
-1. 检查日志文件获取详细错误信息
-2. 使用测试连接功能验证配置
-3. 确认GitHub Token权限和有效性
-4. 检查网络连接和镜像服务状态
+## 许可证
+MIT
