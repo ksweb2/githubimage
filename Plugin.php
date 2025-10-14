@@ -53,7 +53,13 @@ class GitHubImageUpload_Plugin implements Typecho_Plugin_Interface
         $githubRepo = new Typecho_Widget_Helper_Form_Element_Text('githubRepo', NULL, '', _t('GitHub仓库名'), _t('GitHub仓库名'));
         $form->addInput($githubRepo);
 
-        $useMirror = new Typecho_Widget_Helper_Form_Element_Radio('useMirror', array('0' => _t('不使用'), '1' => _t('使用')), '0', _t('使用镜像'), _t('是否使用GitHub镜像加速'));
+        $useMirror = new Typecho_Widget_Helper_Form_Element_Radio(
+            'useMirror',
+            array('0' => _t('不使用'), '1' => _t('使用')), 
+            '0',
+            _t('使用镜像'),
+            _t('是否将图片直链改写为镜像/代理以加速访问（仅图片生效）')
+        );
         $form->addInput($useMirror);
 
         $mirrorUrl = new Typecho_Widget_Helper_Form_Element_Text(
@@ -61,7 +67,7 @@ class GitHubImageUpload_Plugin implements Typecho_Plugin_Interface
             NULL,
             '',
             _t('内容镜像地址'),
-            _t('两种常见格式：\n1) 传统：填写 raw 域（例：https://raw.kkgithub.com/）\n2) gh-proxy：填写代理根（例：https://hk.gh-proxy.com）')
+            _t('两种常见方式（任填其一）：\n① 传统 raw 镜像：填写 raw 域，如 https://raw.kkgithub.com/\n② gh-proxy 代理：填写代理根，如 https://hk.gh-proxy.com\n提示：不填则使用 GitHub 原始域 https://raw.githubusercontent.com/')
         );
         $form->addInput($mirrorUrl);
 
@@ -70,9 +76,19 @@ class GitHubImageUpload_Plugin implements Typecho_Plugin_Interface
             NULL,
             '',
             _t('API 镜像地址'),
-            _t('用于 GitHub API 上传加速（传统镜像），如：https://api.kkgithub.com/')
+            _t('用于上传走 GitHub API 的加速（仅支持传统镜像），如：https://api.kkgithub.com/\n仅当包含“api.”时才会启用替换，避免前缀代理导致双重 URL')
         );
         $form->addInput($apiMirrorUrl);
+
+        // 图片优化开关（智能优化，无需其他参数）
+        $enableOpt = new Typecho_Widget_Helper_Form_Element_Radio(
+            'enableOptimization',
+            array('0' => _t('关闭'), '1' => _t('开启')),
+            '1',
+            _t('图片智能压缩'),
+            _t('对 JPG/PNG/WebP 在上传前进行等比缩放与压缩；默认开启，可一键关闭')
+        );
+        $form->addInput($enableOpt);
     }
 
     /**
@@ -398,7 +414,8 @@ class GitHubImageUpload_Plugin implements Typecho_Plugin_Interface
         
         self::log("GitHub API URL: " . $url);
         
-        $fileContent = file_get_contents($file['tmp_name']);
+        // 读取文件内容（如启用图片优化则优先采用优化后的字节内容）
+        $fileContent = self::maybeOptimizeImage($file, $options);
         if ($fileContent === false) {
             self::log("无法读取文件内容");
             return false;
@@ -440,6 +457,99 @@ class GitHubImageUpload_Plugin implements Typecho_Plugin_Interface
         }
         
         return $httpCode === 201;
+    }
+
+    /**
+     * 尝试对图片进行压缩/缩放优化，仅对 JPG/PNG/WebP 生效。
+     * 返回：字符串（二进制字节）或 false
+     */
+    private static function maybeOptimizeImage($file, $options)
+    {
+        try {
+            // 可通过设置开关控制是否进行优化
+            if (isset($options->enableOptimization) && (string)$options->enableOptimization !== '1') {
+                return @file_get_contents($file['tmp_name']);
+            }
+            // 智能优化（GD 不可用则回退）
+
+            $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+            if (!in_array($ext, array('jpg', 'jpeg', 'png', 'webp'))) {
+                return @file_get_contents($file['tmp_name']);
+            }
+
+            if (!function_exists('imagecreatefromstring')) {
+                self::log('GD 扩展不可用，跳过图片优化');
+                return @file_get_contents($file['tmp_name']);
+            }
+
+            $raw = @file_get_contents($file['tmp_name']);
+            if ($raw === false) {
+                return false;
+            }
+
+            $im = @imagecreatefromstring($raw);
+            if (!$im) {
+                // 不是标准可解析图片，返回原始内容
+                return $raw;
+            }
+
+            $width = imagesx($im);
+            $height = imagesy($im);
+            // 智能默认：最长边不超过 2560px
+            $maxW = 2560;
+            $maxH = 2560;
+            $scale = 1.0;
+            if ($maxW > 0 && $width > $maxW) {
+                $scale = min($scale, $maxW / $width);
+            }
+            if ($maxH > 0 && $height > $maxH) {
+                $scale = min($scale, $maxH / $height);
+            }
+            if ($scale < 1.0) {
+                $newW = max(1, (int)($width * $scale));
+                $newH = max(1, (int)($height * $scale));
+                $dst = imagecreatetruecolor($newW, $newH);
+                // 保持透明通道
+                imagealphablending($dst, false);
+                imagesavealpha($dst, true);
+                imagecopyresampled($dst, $im, 0, 0, 0, 0, $newW, $newH, $width, $height);
+                imagedestroy($im);
+                $im = $dst;
+            }
+
+            // 智能默认：质量 85
+            $quality = 85;
+
+            ob_start();
+            if ($ext === 'jpg' || $ext === 'jpeg') {
+                imageinterlace($im, 1);
+                imagejpeg($im, null, $quality);
+            } elseif ($ext === 'png') {
+                // PNG 压缩等级 0(无损/大) - 9(体积小/有损)，由 0-100 质量映射
+                $level = (int)round((100 - $quality) * 9 / 100);
+                $level = max(0, min(9, $level));
+                imagesavealpha($im, true);
+                imagepng($im, null, $level);
+            } else { // webp
+                if (function_exists('imagewebp')) {
+                    imagewebp($im, null, $quality);
+                } else {
+                    // 环境不支持 webp 编码，回退原始
+                    ob_end_clean();
+                    imagedestroy($im);
+                    return $raw;
+                }
+            }
+            $out = ob_get_clean();
+            imagedestroy($im);
+            if ($out === false || $out === '') {
+                return $raw;
+            }
+            return $out;
+        } catch (Exception $e) {
+            self::log('图片优化异常: ' . $e->getMessage());
+            return @file_get_contents($file['tmp_name']);
+        }
     }
 }
 ?>

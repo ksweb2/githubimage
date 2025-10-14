@@ -29,6 +29,12 @@
   - 启用后上传时以该域替换 `https://api.github.com/`
   - 仅建议填写含 `api.` 的传统镜像，避免前缀代理引发双重 URL
 
+### 图片优化（智能，可开关）
+- 后台可一键开启/关闭图片智能压缩（默认开启）
+- 最长边默认不超过 2560px（等比缩放）
+- JPG/WebP 默认质量 85；PNG 自动映射压缩等级
+- 服务器未安装 GD 或不支持的格式将自动回退为原图
+
 ## 使用
 - 编辑器上传图片：图片直传 GitHub；插入到编辑器的 URL 为原始/镜像直链
 - 编辑器上传非图片：按 Typecho 默认流程保存到本地 `/usr/uploads`，URL 不改写
@@ -38,6 +44,7 @@
 - 不预创建目录与 `.gitkeep`，直接对多级路径执行 PUT
 - 仅图片扩展名会被镜像改写：`jpg|jpeg|png|gif|webp|bmp|svg`
 - 上传失败会记录日志并返回错误；非图片流程不受影响
+ - 智能优化：对 JPG/PNG/WebP 在上传前使用 GD 进行缩放/压缩
 
 ## 日志
 - 路径：`GitHubImageUpload/log/github_upload_YYYY-MM-DD.log`
