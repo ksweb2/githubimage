@@ -2,8 +2,8 @@
     "name": "GitHub Image Upload",
     "description": "GitHub图床插件 - 将图片上传到GitHub仓库",
     "version": "3.0.0",
-    "author": "Your Name",
-    "homepage": "https://github.com/yourusername/typecho-github-image-upload",
+    "author": "ksweb2",
+    "homepage": "https://github.com/ksweb2/githubimage",
     "license": "MIT",
     "typechoVersion": "1.2.0",
     "phpVersion": "7.0.0"
