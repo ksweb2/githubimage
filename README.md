@@ -1,15 +1,16 @@
 # GitHubImageUpload (Typecho 插件)
 
-将图片附件上传到 GitHub 仓库，并在编辑器与内容中以直链形式展示；支持镜像加速（传统 raw 域 与 gh-proxy）。非图片文件（如 mp3/zip/pdf）继续走 Typecho 默认本地上传流程，互不干扰。
+将图片附件上传到 GitHub 仓库，并在编辑器与内容中以直链形式展示；支持镜像加速（可选：传统 raw 域 或 gh-proxy）。非图片文件（如 mp3/zip/pdf）继续走 Typecho 默认本地上传流程，互不干扰；删除附件时可同步删除 GitHub 图床上的对应文件。
 
 ## 功能特性
-- 图片直传 GitHub（Contents API），保存为 `images/YYYY/MM/DD/<unique>.<ext>`
-- 镜像加速（可选）：
-  - 传统 raw 域：`https://raw.kkgithub.com/<user>/<repo>/main/images/...`
-  - gh-proxy 前缀：`https://hk.gh-proxy.com/https://raw.githubusercontent.com/<user>/<repo>/main/images/...`
+- 图片直传 GitHub（Contents API），保存为 `images/YYYY/MM/DD/<unique>.<ext>`，支持自定义分支
+- 镜像加速（可选，新增“镜像模式”开关）：
+  - 传统 raw 域：`https://raw.kkgithub.com/<user>/<repo>/<branch>/images/...`
+  - gh-proxy 前缀：`https://hk.gh-proxy.com/https://raw.githubusercontent.com/<user>/<repo>/<branch>/images/...`
 - API 上传加速（可选）：将 `https://api.github.com/` 替换为传统 API 镜像（如 `https://api.kkgithub.com/`）
 - 编辑器注入：仅对图片扩展名改写为直链/镜像；非图片不改写
 - 内容过滤：发布后将本地图片 URL 替换为 GitHub 直链/镜像 URL
+- 删除同步（新增）：在“附件/文件管理”删除图片时，同步调用 GitHub API 删除仓库中的对应文件（最佳努力，不阻塞本地流程）
 - 健壮日志：记录上传请求与错误，便于排障
 
 ## 安装
@@ -21,12 +22,14 @@
 - GitHub Token：具备目标仓库内容写入权限（repo）
 - GitHub 用户名：如 `ksweb2`
 - GitHub 仓库名：如 `tuchuang`
+- GitHub 分支：默认 `main`，用于生成直链与进行上传/删除 API 操作
 - 使用镜像：是否启用内容镜像
+- 镜像模式：可选 `传统 raw` 或 `gh-proxy`
 - 内容镜像地址（可选）：
-  - 传统镜像（raw 域）：如 `https://raw.kkgithub.com/`
+  - 传统镜像（raw 域）：如 `https://raw.kkgithub.com`
   - gh-proxy 代理根：如 `https://hk.gh-proxy.com`
 - API 镜像地址（可选）：传统镜像 API 域，如 `https://api.kkgithub.com/`
-  - 启用后上传时以该域替换 `https://api.github.com/`
+  - 启用后上传/删除时以该域替换 `https://api.github.com/`
   - 仅建议填写含 `api.` 的传统镜像，避免前缀代理引发双重 URL
 
 ### 图片优化（智能，可开关）
@@ -39,6 +42,13 @@
 - 编辑器上传图片：图片直传 GitHub；插入到编辑器的 URL 为原始/镜像直链
 - 编辑器上传非图片：按 Typecho 默认流程保存到本地 `/usr/uploads`，URL 不改写
 - 发布后：内容中的本地图片 URL 会被替换为 GitHub 直链/镜像 URL
+
+### 删除同步行为
+- 在“附件/文件管理”中删除图片时，插件会：
+  1) 从已保存的直链（raw/镜像）中解析出相对路径 `YYYY/MM/DD/filename.ext`
+  2) 调用 GitHub Contents API 获取该文件 `sha`
+  3) 使用 DELETE 请求删除仓库中 `images/<相对路径>` 的文件，提交到所配置的分支
+- 若 GitHub 上的文件已不存在或删除失败，不会阻塞本地删除流程（最佳努力）
 
 ## 行为/实现细节
 - 不预创建目录与 `.gitkeep`，直接对多级路径执行 PUT
@@ -61,7 +71,7 @@
 - 是否需要反向代理/缓存？
   - 非必须。若读者访问 raw 较慢，可配置镜像；也可在 CDN/前端做缓存。
 - 镜像如何填写？
-  - 传统内容镜像：`https://raw.kkgithub.com/`
+  - 传统内容镜像：`https://raw.kkgithub.com`
   - gh-proxy 内容镜像：`https://hk.gh-proxy.com`
   - 传统 API 镜像：`https://api.kkgithub.com/`
 

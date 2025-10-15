@@ -22,6 +22,7 @@ class GitHubImageUpload_Plugin implements Typecho_Plugin_Interface
         // 注册上传钩子
         Typecho_Plugin::factory('Widget_Upload')->uploadHandle = array('GitHubImageUpload_Plugin', 'uploadHandle');
         Typecho_Plugin::factory('Widget_Upload')->attachmentHandle = array('GitHubImageUpload_Plugin', 'attachmentHandle');
+        Typecho_Plugin::factory('Widget_Upload')->deleteHandle = array('GitHubImageUpload_Plugin', 'deleteHandle');
         
         // 注册内容过滤器
         Typecho_Plugin::factory('Widget_Contents_Post_Edit')->contentFilter = array('GitHubImageUpload_Plugin', 'contentFilter');
@@ -53,6 +54,9 @@ class GitHubImageUpload_Plugin implements Typecho_Plugin_Interface
         $githubRepo = new Typecho_Widget_Helper_Form_Element_Text('githubRepo', NULL, '', _t('GitHub仓库名'), _t('GitHub仓库名'));
         $form->addInput($githubRepo);
 
+        $githubBranch = new Typecho_Widget_Helper_Form_Element_Text('githubBranch', NULL, 'main', _t('GitHub分支'), _t('用于读取与删除内容的分支，默认 main'));
+        $form->addInput($githubBranch);
+
         $useMirror = new Typecho_Widget_Helper_Form_Element_Radio(
             'useMirror',
             array('0' => _t('不使用'), '1' => _t('使用')), 
@@ -62,12 +66,21 @@ class GitHubImageUpload_Plugin implements Typecho_Plugin_Interface
         );
         $form->addInput($useMirror);
 
+        $mirrorMode = new Typecho_Widget_Helper_Form_Element_Radio(
+            'mirrorMode',
+            array('traditional' => _t('传统 raw 镜像'), 'gh-proxy' => _t('gh-proxy 代理')),
+            'traditional',
+            _t('镜像模式'),
+            _t('显式选择镜像加速模式，避免自动识别误判')
+        );
+        $form->addInput($mirrorMode);
+
         $mirrorUrl = new Typecho_Widget_Helper_Form_Element_Text(
             'mirrorUrl',
             NULL,
             '',
             _t('内容镜像地址'),
-            _t('两种常见方式（任填其一）：\n① 传统 raw 镜像：填写 raw 域，如 https://raw.kkgithub.com/\n② gh-proxy 代理：填写代理根，如 https://hk.gh-proxy.com\n提示：不填则使用 GitHub 原始域 https://raw.githubusercontent.com/')
+            _t('根据镜像模式填写：\n- 传统：如 https://raw.kkgithub.com\n- gh-proxy：如 https://hk.gh-proxy.com\n留空则使用 https://raw.githubusercontent.com/')
         );
         $form->addInput($mirrorUrl);
 
@@ -115,7 +128,6 @@ class GitHubImageUpload_Plugin implements Typecho_Plugin_Interface
         
         file_put_contents($logFile, $logMessage, FILE_APPEND | LOCK_EX);
     }
-
     /**
      * 处理文件上传
      */
@@ -237,8 +249,28 @@ class GitHubImageUpload_Plugin implements Typecho_Plugin_Interface
                 $path = $content['attachment']->path;
                 self::log("attachmentHandle - path: " . $path);
                 
-                // 已是完整URL则直接返回
+                // 已是完整URL：如为 raw.githubusercontent.com 且启用镜像，则改写为镜像；否则原样返回
                 if (is_string($path) && (strpos($path, 'http://') === 0 || strpos($path, 'https://') === 0)) {
+                    try {
+                        if (strpos($path, 'https://raw.githubusercontent.com/') === 0) {
+                            $options = Typecho_Widget::widget('Widget_Options');
+                            $pluginOptions = $options->plugin('GitHubImageUpload');
+                            $useMirror = !empty($pluginOptions->useMirror) && !empty($pluginOptions->mirrorUrl);
+                            if ($useMirror) {
+                                $branch = !empty($pluginOptions->githubBranch) ? $pluginOptions->githubBranch : 'main';
+                                if (preg_match('#^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/' . preg_quote($branch, '#') . '/images/(.+)$#', $path, $m)) {
+                                    $user = $m[1];
+                                    $repo = $m[2];
+                                    $rel = $m[3];
+                                    $mirrored = self::buildRawUrl($user, $repo, $rel, $pluginOptions);
+                                    self::log("attachmentHandle - 绝对URL镜像改写: " . $mirrored);
+                                    return $mirrored;
+                                }
+                            }
+                        }
+                    } catch (Exception $e) {
+                        self::log("attachmentHandle - 绝对URL镜像改写异常: " . $e->getMessage());
+                    }
                     self::log("attachmentHandle - 已是绝对URL，直接返回");
                     return $path;
                 }
@@ -314,23 +346,19 @@ class GitHubImageUpload_Plugin implements Typecho_Plugin_Interface
     private static function buildRawUrl($user, $repo, $relativePath, $pluginOptions)
     {
         $relative = ltrim($relativePath, '/');
-        // 若传入的是 YYYY/MM/DD/filename.xx 之外的路径，直接返回原始
-        $raw = "https://raw.githubusercontent.com/{$user}/{$repo}/main/images/{$relative}";
+        $branch = !empty($pluginOptions->githubBranch) ? $pluginOptions->githubBranch : 'main';
+        $raw = "https://raw.githubusercontent.com/{$user}/{$repo}/{$branch}/images/{$relative}";
         $useMirror = !empty($pluginOptions->useMirror) && !empty($pluginOptions->mirrorUrl);
         if (!$useMirror) {
             return $raw;
         }
         $mirror = rtrim($pluginOptions->mirrorUrl, '/');
-        // 传统镜像 raw.kkgithub.com
-        if (strpos($mirror, 'raw.kkgithub.com') !== false) {
-            return str_replace('https://raw.githubusercontent.com/', 'https://raw.kkgithub.com/', $raw);
-        }
-        // gh-proxy 模式（如 hk.gh-proxy.com），拼接 https://proxy/https://raw.githubusercontent.com/...
-        if (strpos($mirror, 'gh-proxy') !== false) {
+        $mode = isset($pluginOptions->mirrorMode) ? (string)$pluginOptions->mirrorMode : 'traditional';
+        if ($mode === 'gh-proxy') {
             return $mirror . '/' . preg_replace('#^https?://#', '', $raw);
         }
-        // 其他镜像（如 https://kkgithub.com/ ）保留原样，以免再次出现双重URL
-        return $raw;
+        // traditional
+        return str_replace('https://raw.githubusercontent.com', $mirror, $raw);
     }
 
     /**
@@ -346,12 +374,14 @@ class GitHubImageUpload_Plugin implements Typecho_Plugin_Interface
         echo "    if(!/\\.(png|jpe?g|gif|webp|bmp|svg)(?:[#?].*)?$/i.test(rel)){ return null; }\n";
         echo "    var user='" . addslashes(Typecho_Widget::widget('Widget_Options')->plugin('GitHubImageUpload')->githubUser) . "';\n";
         echo "    var repo='" . addslashes(Typecho_Widget::widget('Widget_Options')->plugin('GitHubImageUpload')->githubRepo) . "';\n";
+        echo "    var branch='" . addslashes(Typecho_Widget::widget('Widget_Options')->plugin('GitHubImageUpload')->githubBranch ?: 'main') . "';\n";
         echo "    var useMirror=" . (Typecho_Widget::widget('Widget_Options')->plugin('GitHubImageUpload')->useMirror ? 'true' : 'false') . ";\n";
         echo "    var mirrorUrl='" . addslashes(rtrim(Typecho_Widget::widget('Widget_Options')->plugin('GitHubImageUpload')->mirrorUrl, '/')) . "';\n";
-        echo "    var raw='https://raw.githubusercontent.com/' + user + '/' + repo + '/main/images/' + rel;\n";
+        echo "    var mirrorMode='" . addslashes(Typecho_Widget::widget('Widget_Options')->plugin('GitHubImageUpload')->mirrorMode ?: 'traditional') . "';\n";
+        echo "    var raw='https://raw.githubusercontent.com/' + user + '/' + repo + '/' + branch + '/images/' + rel;\n";
         echo "    if(useMirror && mirrorUrl){\n";
-        echo "      if(mirrorUrl.indexOf('raw.kkgithub.com')>-1){ return raw.replace('https://raw.githubusercontent.com/', 'https://raw.kkgithub.com/'); }\n";
-        echo "      if(mirrorUrl.indexOf('gh-proxy')>-1){ return mirrorUrl + '/' + raw.replace(/^https?:\\/\\//,''); }\n";
+        echo "      if(mirrorMode === 'gh-proxy'){ return mirrorUrl + '/' + raw.replace(/^https?:\\/\\//,''); }\n";
+        echo "      return raw.replace('https://raw.githubusercontent.com', mirrorUrl);\n";
         echo "    }\n";
         echo "    return raw;\n";
         echo "  }\n";
@@ -382,6 +412,152 @@ class GitHubImageUpload_Plugin implements Typecho_Plugin_Interface
         echo "  }\n";
         echo "})();\n";
         echo "</script>\n";
+    }
+
+    /**
+     * 删除附件时同步删除 GitHub 文件
+     */
+    public static function deleteHandle($content)
+    {
+        try {
+            self::log("deleteHandle调用");
+            if (!isset($content['attachment']) || !isset($content['attachment']->path)) {
+                return false; // 走默认删除
+            }
+            $path = (string)$content['attachment']->path;
+
+            // 仅处理本插件上传到 GitHub 的图片。非 http(s) 路径交给默认逻辑
+            if (strpos($path, 'http://') !== 0 && strpos($path, 'https://') !== 0) {
+                return false;
+            }
+
+            $options = Typecho_Widget::widget('Widget_Options');
+            $pluginOptions = $options->plugin('GitHubImageUpload');
+            if (empty($pluginOptions->githubToken) || empty($pluginOptions->githubUser) || empty($pluginOptions->githubRepo)) {
+                self::log('删除中止：插件未配置完整 GitHub 信息');
+                return false;
+            }
+            $branch = !empty($pluginOptions->githubBranch) ? $pluginOptions->githubBranch : 'main';
+
+            // 从 raw 或镜像 URL 中提取相对路径 YYYY/MM/DD/xxx.ext
+            $relative = self::extractRelativeFromUrl($path, $pluginOptions);
+            if ($relative === null) {
+                self::log('未能从URL提取相对路径，跳过GitHub删除: ' . $path);
+                return false;
+            }
+
+            $apiBase = self::getApiBase($pluginOptions);
+            $repo = urlencode($pluginOptions->githubRepo);
+            $user = urlencode($pluginOptions->githubUser);
+            $contentPath = 'images/' . ltrim($relative, '/');
+
+            // 先获取文件 sha
+            $infoUrl = $apiBase . "repos/{$user}/{$repo}/contents/" . rawurlencode($contentPath) . '?ref=' . rawurlencode($branch);
+            self::log('获取文件信息: ' . $infoUrl);
+            $resp = self::curlJson($infoUrl, 'GET', null, $pluginOptions->githubToken);
+            if (!$resp || empty($resp['sha'])) {
+                self::log('获取 sha 失败，可能文件已不存在于 GitHub');
+                return true; // 视为已删除
+            }
+            $sha = $resp['sha'];
+
+            // 调用 DELETE 删除
+            $delUrl = $apiBase . "repos/{$user}/{$repo}/contents/" . rawurlencode($contentPath);
+            $payload = array(
+                'message' => 'Delete image via Typecho (sync)',
+                'sha' => $sha,
+                'branch' => $branch
+            );
+            self::log('删除 GitHub 文件: ' . $delUrl);
+            $delResp = self::curlJson($delUrl, 'DELETE', $payload, $pluginOptions->githubToken, 30);
+            if (isset($delResp['commit'])) {
+                self::log('GitHub 删除成功: ' . $contentPath);
+                return true;
+            }
+            self::log('GitHub 删除响应异常');
+            return true; // 不阻塞本地流程
+        } catch (Exception $e) {
+            self::log('deleteHandle异常: ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    private static function getApiBase($options)
+    {
+        $apiBase = 'https://api.github.com/';
+        if (!empty($options->apiMirrorUrl)) {
+            $apiBase = rtrim($options->apiMirrorUrl, '/') . '/';
+        }
+        return $apiBase;
+    }
+
+    private static function curlJson($url, $method = 'GET', $data = null, $token = '', $timeout = 20)
+    {
+        $headers = array(
+            'User-Agent: Typecho-GitHub-Image-Upload',
+        );
+        if (!empty($token)) {
+            $headers[] = 'Authorization: token ' . $token;
+        }
+        if ($data !== null) {
+            $headers[] = 'Content-Type: application/json';
+        }
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, $timeout);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        if ($method === 'PUT' || $method === 'DELETE') {
+            curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
+        } elseif ($method === 'POST') {
+            curl_setopt($ch, CURLOPT_POST, true);
+        }
+        if ($data !== null) {
+            curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+        }
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+        $resp = curl_exec($ch);
+        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $err = curl_error($ch);
+        curl_close($ch);
+        self::log("HTTP {$method} {$code} -> {$url}");
+        if ($err) {
+            self::log('cURL错误: ' . $err);
+            return null;
+        }
+        $json = json_decode($resp, true);
+        return $json;
+    }
+
+    private static function extractRelativeFromUrl($url, $pluginOptions)
+    {
+        try {
+            $branch = !empty($pluginOptions->githubBranch) ? $pluginOptions->githubBranch : 'main';
+            // 支持 raw.githubusercontent、传统镜像、gh-proxy 三种形式
+            // 统一移除前缀直到 /{user}/{repo}/{branch}/images/
+            $patterns = array(
+                '#https?://raw\.githubusercontent\.com/[^/]+/[^/]+/' . preg_quote($branch, '#') . '/images/(.+)$#i',
+            );
+            if (!empty($pluginOptions->mirrorUrl)) {
+                $mirror = rtrim($pluginOptions->mirrorUrl, '/');
+                $mode = isset($pluginOptions->mirrorMode) ? (string)$pluginOptions->mirrorMode : 'traditional';
+                if ($mode === 'gh-proxy') {
+                    // https://proxy/https://raw.githubusercontent.com/user/repo/branch/images/rel
+                    $patterns[] = '#^' . preg_quote($mirror, '#') . '/https?://raw\.githubusercontent\.com/[^/]+/[^/]+/' . preg_quote($branch, '#') . '/images/(.+)$#i';
+                } else {
+                    // traditional: mirror replaces host, e.g. https://raw.kkgithub.com/user/repo/branch/images/rel
+                    $patterns[] = '#^' . preg_quote($mirror, '#') . '/[^/]+/[^/]+/' . preg_quote($branch, '#') . '/images/(.+)$#i';
+                }
+            }
+            foreach ($patterns as $p) {
+                if (preg_match($p, $url, $m)) {
+                    return $m[1];
+                }
+            }
+        } catch (Exception $e) {
+            self::log('extractRelativeFromUrl异常: ' . $e->getMessage());
+        }
+        return null;
     }
 
     /**
@@ -423,7 +599,8 @@ class GitHubImageUpload_Plugin implements Typecho_Plugin_Interface
         
         $data = array(
             'message' => 'Upload image via Typecho',
-            'content' => base64_encode($fileContent)
+            'content' => base64_encode($fileContent),
+            'branch' => (!empty($options->githubBranch) ? $options->githubBranch : 'main')
         );
         
         $headers = array(
@@ -458,7 +635,6 @@ class GitHubImageUpload_Plugin implements Typecho_Plugin_Interface
         
         return $httpCode === 201;
     }
-
     /**
      * 尝试对图片进行压缩/缩放优化，仅对 JPG/PNG/WebP 生效。
      * 返回：字符串（二进制字节）或 false
@@ -481,7 +657,6 @@ class GitHubImageUpload_Plugin implements Typecho_Plugin_Interface
                 self::log('GD 扩展不可用，跳过图片优化');
                 return @file_get_contents($file['tmp_name']);
             }
-
             $raw = @file_get_contents($file['tmp_name']);
             if ($raw === false) {
                 return false;
@@ -492,7 +667,6 @@ class GitHubImageUpload_Plugin implements Typecho_Plugin_Interface
                 // 不是标准可解析图片，返回原始内容
                 return $raw;
             }
-
             $width = imagesx($im);
             $height = imagesy($im);
             // 智能默认：最长边不超过 2560px
@@ -553,3 +727,7 @@ class GitHubImageUpload_Plugin implements Typecho_Plugin_Interface
     }
 }
 ?>
+
+
+
+
